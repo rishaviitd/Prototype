@@ -33,7 +33,7 @@ A Streamlit application for performing OCR on scanned pages, merging bounding bo
 The application uses the Google Gemini API. By default, an API key is hard-coded in `agent.py`. To use your own key, update the `api_key` variable in `agent.py`, or set an environment variable and modify the code to read it:
 
 ```bash
-export GOOGLE_API_KEY=YOUR_API_KEY
+GOOGLE_API_KEY=YOUR_API_KEY
 ```
 
 ## Running the App
