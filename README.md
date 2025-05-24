@@ -30,7 +30,7 @@ A Streamlit application for performing OCR on scanned pages, merging bounding bo
 
 ## Configuration
 
-The application uses the Google Gemini API. By default, an API key is hard-coded in `agent.py`. To use your own key, update the `api_key` variable in `agent.py`, or set an environment variable and modify the code to read it:
+The application uses the Google Gemini API, so put the gemini api key in place of your api key
 
 ```bash
 GOOGLE_API_KEY=YOUR_API_KEY
@@ -41,7 +41,7 @@ GOOGLE_API_KEY=YOUR_API_KEY
 Start the Streamlit application:
 
 ```bash
-streamlit run app.py
+python -m streamlit run app.py
 ```
 
 Upload PNG or JPEG images through the web interface and follow the on-screen prompts to analyze and crop question images.
