@@ -113,6 +113,17 @@ def crop_questions(image, boxes_json, question_mapping):
 st.set_page_config(page_title="OCR & Box Merge App")
 
 st.title("OCR & Box Merge Streamlit App")
+if 'gemini_cost' not in st.session_state:
+    st.session_state['gemini_cost'] = 0.0
+if 'gemini_usage' not in st.session_state:
+    st.session_state['gemini_usage'] = {}
+
+col1, col2 = st.columns([3, 1])
+# Placeholder to display and update INR cost dynamically
+cost_placeholder = col2.empty()
+# Display initial INR cost directly (gemini_cost is in INR)
+rupee_cost = st.session_state['gemini_cost']
+cost_placeholder.metric("Gemini Cost (INR)", f"₹{rupee_cost:.13f}")
 
 # Orchestration for multi-image upload and processing
 uploaded_files = st.file_uploader(
@@ -174,7 +185,24 @@ with tab_result:
                 }
                 for future in concurrent.futures.as_completed(future_to_name):
                     name = future_to_name[future]
-                    st.session_state['gemini_responses'][name] = future.result()
+                    response = future.result()
+                    # Handle errors
+                    if isinstance(response, dict) and 'error' in response:
+                        st.session_state['gemini_responses'][name] = {'error': response['error']}
+                    else:
+                        # Unpack mapping and usage metadata
+                        mapping = response.get('mapping', {})
+                        usage = response.get('usage_metadata', {})
+                        st.session_state['gemini_responses'][name] = mapping
+                        st.session_state['gemini_usage'][name] = usage
+                        # Calculate cost in INR: $0.15 per 1M input tokens + $3.5 per 1M output tokens
+                        input_tokens = usage.get('promptTokenCount', 0)+280
+                        output_tokens = usage.get('candidatesTokenCount', usage.get('completionTokens', 0))
+                        usd_cost = input_tokens * (0.15 / 1_000_000) + output_tokens * (3.5 / 1_000_000)
+                        cost_inr = usd_cost * 85
+                        st.session_state['gemini_cost'] += cost_inr
+                        # Update displayed INR cost after calculation
+                        cost_placeholder.metric("Gemini Cost (INR)", f"₹{st.session_state['gemini_cost']:.13f}")
             st.success("Analysis complete! Check the Gemini Analysis tab.")
 
 with tab_gemini:
@@ -183,6 +211,14 @@ with tab_gemini:
         if "error" in gemini_data:
             st.error(f"Error: {gemini_data['error']}")
         else:
+            # Display token usage for each image
+            usage = st.session_state['gemini_usage'].get(file_name, {})
+            # Determine input and output tokens from usage metadata
+            input_tokens = usage.get('promptTokenCount', 0)+280
+            output_tokens = usage.get('candidatesTokenCount', usage.get('completionTokens', 0))
+            col_a, col_b = st.columns(2)
+            col_a.metric("Input Tokens", input_tokens)
+            col_b.metric("Output Tokens", output_tokens)
             st.json(gemini_data)
     if st.button("✂️ Crop All Questions", key="crop_all"):
         with st.spinner("Cropping question images..."):

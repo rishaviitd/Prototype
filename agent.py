@@ -137,7 +137,15 @@ def call_gemini_api(image_bytes: bytes, api_key: str) -> Dict[str, List[int]]:
                         json_end = text.rfind('}') + 1
                         if json_start >= 0 and json_end > json_start:
                             json_str = text[json_start:json_end]
-                            return json.loads(json_str)
+                            # Parse the question mapping JSON
+                            mapping = json.loads(json_str)
+                            # Extract usage metadata for cost calculation
+                            candidate = result["candidates"][0]
+                            if isinstance(candidate, dict) and "metadata" in candidate and "tokenUsage" in candidate["metadata"]:
+                                usage = candidate["metadata"]["tokenUsage"]
+                            else:
+                                usage = result.get("usageMetadata", {})
+                            return {"mapping": mapping, "usage_metadata": usage}
         
         # If we couldn't parse the expected JSON format
         return {"error": "Failed to parse JSON from Gemini response"}
