@@ -2,7 +2,7 @@ import os
 import warnings
 import logging
 import sys
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageDraw
 import io
 import concurrent.futures
 from dotenv import load_dotenv
@@ -32,87 +32,65 @@ logging.getLogger("streamlit.runtime").setLevel(logging.ERROR)
 import streamlit as st
 import cv2
 import numpy as np
-import easyocr
-import networkx as nx
 import json
-from itertools import combinations
-from math import sqrt
-from agent import call_gemini_api, call_gemini_match_api  # Import the Gemini API functions
-import orchestration
-
-# ─── Function to crop questions based on boxes ───────────────────────────
-def crop_questions(image, boxes_json, question_mapping):
-    """
-    Crop sections of the image corresponding to each question based on box mapping.
-    
-    Args:
-        image: The original image (RGB)
-        boxes_json: List of dicts with box info (id and bbox)
-        question_mapping: Dict mapping question IDs to box IDs
-        
-    Returns:
-        Dict mapping question IDs to cropped images
-    """
-    # Convert box IDs to integers in question mapping
-    for q_id, box_ids in question_mapping.items():
-        question_mapping[q_id] = [int(box_id) for box_id in box_ids]
-    
-    # Create a lookup for boxes by ID
-    boxes_by_id = {box['id']: box['bbox'] for box in boxes_json}
-    
-    # Compute original bounding rectangles for each question
-    height, width = image.shape[:2]
-    regions = []
-    for q_id, box_ids in question_mapping.items():
-        if not box_ids:
-            continue
-        x_min, y_min = float('inf'), float('inf')
-        x_max, y_max = 0, 0
-        for box_id in box_ids:
-            if box_id not in boxes_by_id:
-                continue
-            x, y, w, h = boxes_by_id[box_id]
-            x_min = min(x_min, x)
-            y_min = min(y_min, y)
-            x_max = max(x_max, x + w)
-            y_max = max(y_max, y + h)
-        x_min = max(0, x_min)
-        y_min = max(0, y_min)
-        x_max = min(width, x_max)
-        y_max = min(height, y_max)
-        regions.append({'q_id': q_id, 'x_min': x_min, 'x_max': x_max, 'y_min': y_min, 'y_max': y_max})
-
-    # Sort regions by vertical position
-    regions.sort(key=lambda r: r['y_min'])
-
-    # Adjust boundaries and crop each region
-    cropped_images = {}
-    for idx, region in enumerate(regions):
-        y_min, y_max = region['y_min'], region['y_max']
-        # Top boundary
-        if idx > 0:
-            prev_y_max = regions[idx-1]['y_max']
-            half_gap = (y_min - prev_y_max) / 2.0
-            y_min_adj = int(max(0, y_min - half_gap))
-        else:
-            y_min_adj = int(y_min)
-        # Bottom boundary
-        if idx < len(regions) - 1:
-            next_y_min = regions[idx+1]['y_min']
-            half_gap = (next_y_min - y_max) / 2.0
-            y_max_adj = int(min(height, y_max + half_gap))
-        else:
-            y_max_adj = int(y_max)
-        x1, x2 = region['x_min'], region['x_max']
-        if x1 < x2 and y_min_adj < y_max_adj:
-            cropped_images[region['q_id']] = image[y_min_adj:y_max_adj, x1:x2]
-
-    return cropped_images
+from agent import call_gemini_api, call_gemini_match_api, call_gemini_extract_text  # Import the Gemini API functions
+from approach1 import orchestration as orch1
+from approach2 import orchestration as orch2
 
 # ─── Streamlit page config ─────────────────────────────────────────────────
 st.set_page_config(page_title="OCR & Box Merge App")
 
-st.title("OCR & Box Merge Streamlit App")
+st.title("Tick AI")
+
+# ─── Playground Mode Toggle ─────────────────────────────────────────────────
+if 'playground_mode' not in st.session_state:
+    st.session_state['playground_mode'] = False
+if st.button("🛠 Playground", key="play_toggle"):
+    st.session_state['playground_mode'] = True
+if st.session_state['playground_mode']:
+    import io as _io  # for Playground only
+    from PIL import Image as _Image
+    # Initialize feature states
+    if 'cap_tap_active' not in st.session_state:
+        st.session_state['cap_tap_active'] = False
+    st.header("🔬 Playground Interface")
+    st.write("Welcome to the Playground! Here you can run weird experiments.")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Cap-Tap", key="play_cap_tap"):
+            st.session_state['cap_tap_active'] = True
+    with col2:
+        pass
+
+    # Cap-Tap feature: stack two images vertically
+    if st.session_state['cap_tap_active']:
+        st.subheader("Cap-Tap: Stack Two Images")
+        files = st.file_uploader("Upload exactly 2 images to stack", type=["png","jpg","jpeg"], accept_multiple_files=True)
+        if files and len(files) == 2:
+            imgs = []
+            for f in files:
+                content = f.read()
+                img = _Image.open(_io.BytesIO(content))
+                if img.mode != 'RGB':
+                    img = img.convert('RGB')
+                imgs.append(img)
+            # Create canvas for stacked image
+            width = max(im.width for im in imgs)
+            total_height = sum(im.height for im in imgs)
+            canvas = _Image.new('RGB', (width, total_height), 'white')
+            y_offset = 0
+            for im in imgs:
+                x = (width - im.width) // 2
+                canvas.paste(im, (x, y_offset))
+                y_offset += im.height
+            # Display and download
+            buf = _io.BytesIO()
+            canvas.save(buf, format='PNG')
+            byte_img = buf.getvalue()
+            st.image(canvas, caption="Stacked Image", use_column_width=True)
+            st.download_button("Download Stacked Image", byte_img, file_name="stacked.png", mime="image/png")
+        st.stop()
+
 if 'gemini_cost' not in st.session_state:
     st.session_state['gemini_cost'] = 0.0
 if 'gemini_usage' not in st.session_state:
@@ -125,6 +103,13 @@ cost_placeholder = col2.empty()
 rupee_cost = st.session_state['gemini_cost']
 cost_placeholder.metric("Gemini Cost (INR)", f"₹{rupee_cost:.13f}")
 
+# Approach selection
+approach = st.selectbox("Select Approach", ["Approach-1", "Approach-2"], key="approach_select")
+if approach == "Approach-1":
+    orchestration = orch1
+else:
+    orchestration = orch2
+
 # Orchestration for multi-image upload and processing
 uploaded_files = st.file_uploader(
     "Upload PNG or JPEG images", type=["png","jpg","jpeg"], accept_multiple_files=True
@@ -133,10 +118,28 @@ if not uploaded_files:
     st.info("Please upload at least one image to begin.")
     st.stop()
 
-with st.spinner("Running OCR on uploaded images..."):
-    processed_results = orchestration.process_images(uploaded_files)
-    # Store processed results for later use in puzzle solving
-    st.session_state['processed_results'] = processed_results
+# Unified processing based on selected approach
+if approach == "Approach-1":
+    spinner_text = "Running Document AI on uploaded images..."
+    with st.spinner(spinner_text):
+        processed_results = orchestration.process_images(uploaded_files)
+        st.session_state['processed_results'] = processed_results
+elif approach == "Approach-2":
+    # Perform margin crop stage and display results
+    margin_crops = orchestration.margin_crop_images(uploaded_files)
+    st.subheader("📐 Margin Crop Results")
+    for file_name, (crop_img, margin_x, margin_sum) in margin_crops.items():
+        st.subheader(file_name)
+        disp_img = cv2.cvtColor(crop_img, cv2.COLOR_BGR2RGB)
+        st.image(disp_img, caption=f"Cropped at x={margin_x}px", use_column_width=True)
+        st.write(f"Detected margin at x = {margin_x}px (sum={margin_sum})")
+    if st.button("🗜️ Send Cropped Images to Document AI", key="process_doc_ai"):
+        with st.spinner("Running Document AI on cropped images..."):
+            processed_results = orchestration.process_images(uploaded_files)
+            st.session_state['processed_results'] = processed_results
+    processed_results = st.session_state.get('processed_results', [])
+else:
+    processed_results = []
 
 # Initialize session state containers
 if 'gemini_responses' not in st.session_state:
@@ -165,6 +168,12 @@ with tab_result:
             mime="image/png",
             key=f"download_img_{res['file_name']}"
         )
+        # Save annotated image to local downloads directory
+        output_dir = os.path.join(os.getcwd(), "downloads", "annotated-test-dataset")
+        os.makedirs(output_dir, exist_ok=True)
+        save_path = os.path.join(output_dir, f"{res['file_name']}_annotated.png")
+        with open(save_path, "wb") as f:
+            f.write(res['annotated_bytes'])
         st.subheader("Detected Boxes JSON")
         st.json(res['boxes_json'])
         json_str = json.dumps(res['boxes_json'], indent=2)
@@ -279,6 +288,15 @@ with tab_crops:
                     _, buf_u = cv2.imencode('.png', cv2.cvtColor(undef_img, cv2.COLOR_RGB2BGR))
                     _, buf_d = cv2.imencode('.png', cv2.cvtColor(def_img, cv2.COLOR_RGB2BGR))
                     match_res = call_gemini_match_api(buf_u.tobytes(), buf_d.tobytes(), api_key)
+                    # Calculate and update cost for this match API call
+                    usage_match = match_res.get('usage_metadata', {})
+                    # Approximate input and output tokens and compute cost
+                    input_tokens_m = usage_match.get('promptTokenCount', 0) + 280
+                    output_tokens_m = usage_match.get('candidatesTokenCount', usage_match.get('completionTokens', 0))
+                    usd_cost_m = input_tokens_m * (0.15 / 1_000_000) + output_tokens_m * (3.5 / 1_000_000)
+                    cost_inr_m = usd_cost_m * 85
+                    st.session_state['gemini_cost'] += cost_inr_m
+                    cost_placeholder.metric("Gemini Cost (INR)", f"₹{st.session_state['gemini_cost']:.13f}")
                     result = match_res.get('match', 'error')
                     st.write(f"➡️ Result for **{q_label}**: **{result.upper()}**")
                     if result == 'yes':

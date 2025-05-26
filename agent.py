@@ -155,7 +155,7 @@ def call_gemini_api(image_bytes: bytes, api_key: str) -> Dict[str, List[int]]:
 def call_gemini_match_api(undef_bytes: bytes, defined_bytes: bytes, api_key: str) -> Any:
     """
     Call the Gemini 2.5 Flash API to determine if an undefined snippet matches a defined snippet.
-    Returns a dict like {"match": "yes"} or {"match": "no"}.
+    Returns a dict like {"match": "yes", "usage_metadata": {...}} or an error.
     """
     # Base64 encode both images
     base64_undef = base64.b64encode(undef_bytes).decode('utf-8')
@@ -184,10 +184,19 @@ def call_gemini_match_api(undef_bytes: bytes, defined_bytes: bytes, api_key: str
         "generation_config": {"temperature": 0.1, "top_p": 0.95, "response_mime_type": "application/json"}
     }
     response = requests.post(url, headers=headers, params=params, json=data)
+    # Initialize empty usage metadata
+    usage = {}
     if response.status_code != 200:
-        return {"error": f"API Error: {response.status_code} - {response.text}"}
+        return {"error": f"API Error: {response.status_code} - {response.text}", "usage_metadata": usage}
     try:
         result = response.json()
+        # Extract usage metadata for cost calculation
+        if "candidates" in result and result["candidates"]:
+            candidate = result["candidates"][0]
+            if isinstance(candidate, dict) and "metadata" in candidate and "tokenUsage" in candidate["metadata"]:
+                usage = candidate["metadata"]["tokenUsage"]
+            else:
+                usage = result.get("usageMetadata", {})
         # Extract text from candidates
         if "candidates" in result and result["candidates"]:
             parts = result["candidates"][0].get("content", {}).get("parts", [])
@@ -196,7 +205,80 @@ def call_gemini_match_api(undef_bytes: bytes, defined_bytes: bytes, api_key: str
             start = text.find('{')
             end = text.rfind('}') + 1
             if start >= 0 and end > start:
-                return json.loads(text[start:end])
-        return {"error": "Failed to parse JSON from Gemini response"}
+                match_resp = json.loads(text[start:end])
+                # Return match result along with usage metadata
+                return {"match": match_resp.get("match"), "usage_metadata": usage}
+        return {"error": "Failed to parse JSON from Gemini response", "usage_metadata": usage}
+    except Exception as e:
+        return {"error": f"Error processing response: {str(e)}", "usage_metadata": usage}
+
+def call_gemini_extract_text(image_bytes: bytes, api_key: str) -> dict:
+    """
+    Call the Gemini 1.5 Flash API to extract handwritten text from an image.
+    Returns a dict with 'text' and optional 'usage_metadata', or 'error'.
+    """
+    # Base64 encode the image
+    base64_image = base64.b64encode(image_bytes).decode('utf-8')
+    # Prompt for detailed explanation and transcription
+    prompt = """
+You are examining a student's handwritten math answer sheet. Your tasks are:
+1. Carefully read and identify exactly what mathematical problem or calculation the student is attempting.
+2. In 50 words or fewer, clearly explain what the student is trying to accomplish mathematically.
+3. Precisely transcribe exactly what the student has written, including numbers, equations, and any words or symbols.
+Respond strictly in this JSON format:
+{"explanation": "<Clear explanation of the student's mathematical goal in 50 words or fewer>", "text": "<Exact transcription of the student's handwritten text>"}
+"""
+    # API endpoint for Gemini 1.5 Flash
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+    headers = {"Content-Type": "application/json"}
+    params = {"key": api_key}
+    data = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": prompt},
+                    {"inline_data": {"mime_type": "image/png", "data": base64_image}}
+                ]
+            }
+        ],
+        "generation_config": {"temperature": 0.0, "top_p": 0.8, "response_mime_type": "application/json"}
+    }
+    # Make the API call
+    response = requests.post(url, headers=headers, params=params, json=data)
+    if response.status_code != 200:
+        return {"error": f"API Error: {response.status_code} - {response.text}"}
+    try:
+        result = response.json()
+        # Extract usage metadata if available
+        usage = {}
+        candidate = None
+        if "candidates" in result and result["candidates"]:
+            candidate = result["candidates"][0]
+            usage = (
+                candidate.get("metadata", {}).get("tokenUsage")
+                or result.get("usageMetadata", {})
+            )
+        # Extract text from content parts
+        full_text = ""
+        if candidate and "content" in candidate and "parts" in candidate["content"]:
+            for part in candidate["content"]["parts"]:
+                if "text" in part:
+                    full_text += part["text"]
+        # Parse JSON from model output
+        start = full_text.find('{')
+        end = full_text.rfind('}') + 1
+        if start >= 0 and end > start:
+            json_str = full_text[start:end]
+            try:
+                parsed = json.loads(json_str)
+                return {
+                    "explanation": parsed.get("explanation", ""),
+                    "text": parsed.get("text", ""),
+                    "usage_metadata": usage
+                }
+            except Exception:
+                return {"error": "Failed to parse JSON", "usage_metadata": usage}
+        # Fallback: return raw transcription
+        return {"explanation": "", "text": full_text, "usage_metadata": usage}
     except Exception as e:
         return {"error": f"Error processing response: {str(e)}"} 

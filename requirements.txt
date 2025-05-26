@@ -5,3 +5,6 @@ easyocr
 networkx
 requests
 python-dotenv
+google-auth
+pandas
+scikit-learn
