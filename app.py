@@ -33,7 +33,7 @@ import streamlit as st
 import cv2
 import numpy as np
 import json
-from agent import call_gemini_api, call_gemini_match_api, call_gemini_extract_text  # Import the Gemini API functions
+from approach1.agent import call_gemini_api, call_gemini_match_api, call_gemini_extract_text  # Import the Gemini API functions
 from approach1 import orchestration as orch1
 from approach2 import orchestration as orch2
 

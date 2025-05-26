@@ -2,8 +2,60 @@ import io
 import mimetypes
 import numpy as np
 from PIL import Image
-from document_ai.document_ai_client import process_document as process_doc_ai
+import base64
+import time
+import requests
+import os
+import google.auth
+import google.auth.transport.requests
+from dotenv import load_dotenv
+load_dotenv()
 from ocr_utils.utils import merge_nearby_boxes, merge_overlapping_boxes, merge_row_boxes, merge_vertical_overlap_boxes, extend_to_full_width, annotate_image
+
+# Configuration for Google Document AI
+PROJECT_ID = "629159515213"
+LOCATION = "us"
+PROCESSOR_ID = "425f4be70b86af78"
+ENDPOINT_URL = f"https://{LOCATION}-documentai.googleapis.com/v1/projects/{PROJECT_ID}/locations/{LOCATION}/processors/{PROCESSOR_ID}:process"
+
+def get_access_token():
+    """Get access token using Application Default Credentials"""
+    credentials, _ = google.auth.default()
+    auth_req = google.auth.transport.requests.Request()
+    credentials.refresh(auth_req)
+    return credentials.token
+
+def process_document(file_content, mime_type):
+    """Process a document using Google Document AI REST API"""
+    try:
+        access_token = get_access_token()
+        if not access_token:
+            return {"error": "Could not retrieve access token"}
+
+        # Encode document content
+        encoded_content = base64.b64encode(file_content).decode("utf-8")
+        payload = {
+            "rawDocument": {
+                "content": encoded_content,
+                "mimeType": mime_type
+            }
+        }
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
+        }
+
+        start_time = time.time()
+        response = requests.post(ENDPOINT_URL, headers=headers, json=payload)
+        processing_time = time.time() - start_time
+
+        if response.status_code == 200:
+            result = response.json()
+            return {"result": result, "processing_time": processing_time}
+        else:
+            return {"error": f"API Error {response.status_code}: {response.text}", "processing_time": processing_time}
+    except Exception as e:
+        return {"error": f"Unexpected error: {str(e)}"}
 
 def process_and_annotate(file_bytes, mime_type):
     """
@@ -11,7 +63,7 @@ def process_and_annotate(file_bytes, mime_type):
     Returns a dict with keys: disp, annotated, annotated_bytes, boxes_json, logs, result_json, processing_time.
     """
     # Call Document AI
-    response = process_doc_ai(file_bytes, mime_type)
+    response = process_document(file_bytes, mime_type)
     result_json = response.get("result", {})
     processing_time = response.get("processing_time", 0)
     document = result_json.get("document", {})

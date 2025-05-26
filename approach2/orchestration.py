@@ -2,10 +2,9 @@ import io
 import mimetypes
 import numpy as np
 from PIL import Image
-from document_ai.document_ai_client import process_document as process_document_ai
 from ocr_utils.utils import merge_nearby_boxes, merge_overlapping_boxes, merge_row_boxes, merge_vertical_overlap_boxes, extend_to_full_width, annotate_image
 import cv2
-from common.document_ai_processor import process_and_annotate
+from common.document_ai_processor import process_and_annotate, process_document
 from approach2.margin_crop import margin_crop_images
 from approach1.orchestration import crop_questions
 
